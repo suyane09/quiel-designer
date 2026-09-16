@@ -43,6 +43,8 @@ import {
   Send,
   CheckCheck,
   Menu,
+  Image as ImageIcon,
+  Upload,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -621,10 +623,36 @@ function PedidoForm({ pedido, onClose }) {
       dataEntrega: addDays(todayISO(), 7),
       status: "Recebido",
       obs: "",
+      arteAprovada: "",
     };
   });
 
+  const [arteErro, setArteErro] = useState("");
+
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const handleArteChange = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setArteErro("");
+    if (!/^image\/(jpeg|jpg)$/i.test(file.type)) {
+      setArteErro("Envie a arte aprovada em formato JPEG (.jpg/.jpeg).");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setArteErro("Imagem muito grande. Envie um JPEG de até 5MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setForm((f) => ({ ...f, arteAprovada: reader.result }));
+    };
+    reader.onerror = () => {
+      setArteErro("Não foi possível ler o arquivo. Tente novamente.");
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleProdutoChange = (e) => {
     const val = e.target.value;
@@ -794,6 +822,42 @@ function PedidoForm({ pedido, onClose }) {
         <Field label="Observações" span>
           <textarea className={inputCls} rows={2} value={form.obs} onChange={set("obs")} placeholder="Opcional" />
         </Field>
+        <Field label="Arte aprovada pelo cliente (JPEG)" span>
+          {form.arteAprovada ? (
+            <div className="flex items-center gap-3 border border-gray-200 rounded-lg p-2">
+              <img
+                src={form.arteAprovada}
+                alt="Arte aprovada"
+                className="w-16 h-16 object-cover rounded-md border border-gray-100 shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-gray-600">Arte cadastrada. Ela será impressa junto com a OS/nota.</p>
+              </div>
+              <label className="shrink-0 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white cursor-pointer hover:bg-gray-50">
+                Trocar
+                <input type="file" accept="image/jpeg,image/jpg" className="hidden" onChange={handleArteChange} />
+              </label>
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, arteAprovada: "" }))}
+                className="shrink-0 text-xs font-medium text-red-600 border border-red-100 rounded-lg px-2.5 py-1.5 bg-white hover:bg-red-50"
+              >
+                Remover
+              </button>
+            </div>
+          ) : (
+            <label className="flex items-center gap-2 justify-center border border-dashed border-gray-300 rounded-lg px-3 py-4 text-sm text-gray-500 cursor-pointer hover:bg-gray-50">
+              <Upload size={15} />
+              Selecionar arquivo JPEG da arte aprovada
+              <input type="file" accept="image/jpeg,image/jpg" className="hidden" onChange={handleArteChange} />
+            </label>
+          )}
+          {arteErro && <span className="block text-[11px] text-red-500 mt-1">{arteErro}</span>}
+          <span className="block text-[11px] text-gray-400 mt-1">
+            Opcional. Cadastre a arte já aprovada pelo cliente em JPEG para que ela saia impressa junto com os dados
+            do pedido na Ordem de Serviço.
+          </span>
+        </Field>
       </div>
 
       {(valorTotal > 0 || custoTotal > 0) && (
@@ -918,6 +982,17 @@ function OSDocument({ pedido, empresa, clientes }) {
         <div className="mb-6">
           <p className="text-xs text-gray-400 mb-1">Observações</p>
           <p className="text-sm text-gray-700">{pedido.obs}</p>
+        </div>
+      )}
+
+      {pedido.arteAprovada && (
+        <div className="mb-6 arte-aprovada-print">
+          <p className="text-xs text-gray-400 mb-2">Arte aprovada pelo cliente</p>
+          <img
+            src={pedido.arteAprovada}
+            alt="Arte aprovada pelo cliente"
+            className="max-w-full max-h-[420px] w-auto h-auto object-contain rounded-lg border border-gray-200 mx-auto"
+          />
         </div>
       )}
 
@@ -2791,6 +2866,7 @@ export default function GraficaDashboard() {
           .print-area, .print-area * { visibility: visible; }
           .print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 0; }
           .print-area .os-two-col-print { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+          .print-area .arte-aprovada-print { page-break-inside: avoid; }
           .no-print { display: none !important; }
         }
       `}</style>
