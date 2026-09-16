@@ -43,8 +43,6 @@ import {
   Send,
   CheckCheck,
   Menu,
-  Image as ImageIcon,
-  Upload,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -190,6 +188,34 @@ function prazoInfo(dataEntrega, status) {
   if (diff === 0) return { label: "Vence hoje", color: "orange" };
   if (diff <= 3) return { label: `${diff} dia(s) restante(s)`, color: "amber" };
   return { label: `${diff} dia(s) restante(s)`, color: "green" };
+}
+
+function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+// Calcula entrada/restante de um pedido, com compatibilidade para pedidos
+// criados antes desse recurso existir (assume entrada de 50% já recebida e
+// restante de acordo com o status).
+function pagamentoInfo(pedido) {
+  const total = Number(pedido.valor) || 0;
+  const valorEntrada =
+    pedido.valorEntrada != null && pedido.valorEntrada !== "" ? round2(pedido.valorEntrada) : round2(total / 2);
+  const valorRestante = Math.max(0, round2(total - valorEntrada));
+  const entradaPaga = pedido.entradaPaga ?? true;
+  const restantePago = pedido.restantePago ?? pedido.status === "Entregue";
+  const totalRecebido = round2((entradaPaga ? valorEntrada : 0) + (restantePago ? valorRestante : 0));
+  const totalAReceber = round2(total - totalRecebido);
+  let statusLabel = "Pago";
+  let statusColor = "green";
+  if (!entradaPaga && !restantePago) {
+    statusLabel = "Pendente";
+    statusColor = "red";
+  } else if (entradaPaga && !restantePago) {
+    statusLabel = "Entrada paga";
+    statusColor = "amber";
+  }
+  return { total, valorEntrada, valorRestante, entradaPaga, restantePago, totalRecebido, totalAReceber, statusLabel, statusColor };
 }
 
 // ---------------------------------------------------------------------------
@@ -603,11 +629,15 @@ function PedidoForm({ pedido, onClose }) {
       // Compatibilidade com pedidos antigos que não tinham valor/custo unitário salvo.
       const qtdAtual = Number(pedido.qtd) || 1;
       const produtoCadastrado = produtos.find((p) => p.nome === pedido.produto);
+      const pgto = pagamentoInfo(pedido);
       return {
         ...pedido,
         valorUnitario: pedido.valorUnitario ?? (pedido.valor ? Number(pedido.valor) / qtdAtual : ""),
         custoUnitario: pedido.custoUnitario ?? (pedido.custo ? Number(pedido.custo) / qtdAtual : ""),
         produtoId: pedido.produtoId ?? produtoCadastrado?.id ?? "__custom__",
+        valorEntrada: pgto.valorEntrada,
+        entradaPaga: pgto.entradaPaga,
+        restantePago: pgto.restantePago,
       };
     }
     return {
@@ -623,36 +653,17 @@ function PedidoForm({ pedido, onClose }) {
       dataEntrega: addDays(todayISO(), 7),
       status: "Recebido",
       obs: "",
-      arteAprovada: "",
+      valorEntrada: "",
+      entradaPaga: true,
+      restantePago: false,
     };
   });
-
-  const [arteErro, setArteErro] = useState("");
+  // Enquanto o usuário não editar manualmente o valor de entrada, ele acompanha
+  // 50% do valor total do pedido automaticamente.
+  const [entradaManual, setEntradaManual] = useState(isEdit);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  const handleArteChange = (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    setArteErro("");
-    if (!/^image\/(jpeg|jpg)$/i.test(file.type)) {
-      setArteErro("Envie a arte aprovada em formato JPEG (.jpg/.jpeg).");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      setArteErro("Imagem muito grande. Envie um JPEG de até 5MB.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setForm((f) => ({ ...f, arteAprovada: reader.result }));
-    };
-    reader.onerror = () => {
-      setArteErro("Não foi possível ler o arquivo. Tente novamente.");
-    };
-    reader.readAsDataURL(file);
-  };
+  const setCheck = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.checked }));
 
   const handleProdutoChange = (e) => {
     const val = e.target.value;
@@ -680,6 +691,16 @@ function PedidoForm({ pedido, onClose }) {
   const lucroEstimado = valorTotal - custoTotal;
   const margem = valorTotal > 0 ? (lucroEstimado / valorTotal) * 100 : 0;
 
+  // Mantém a entrada em 50% do total automaticamente, a não ser que o usuário
+  // já tenha digitado um valor de entrada diferente.
+  useEffect(() => {
+    if (entradaManual) return;
+    setForm((f) => ({ ...f, valorEntrada: valorTotal > 0 ? round2(valorTotal / 2) : "" }));
+  }, [valorTotal, entradaManual]);
+
+  const valorEntradaNum = Math.min(Number(form.valorEntrada) || 0, valorTotal);
+  const valorRestante = Math.max(0, round2(valorTotal - valorEntradaNum));
+
   const canSave = form.cliente.trim() && form.produto.trim() && form.dataEntrega && qtdNum > 0;
 
   const handleSubmit = (e) => {
@@ -693,6 +714,9 @@ function PedidoForm({ pedido, onClose }) {
       custoUnitario: custoUnitNum,
       valor: valorTotal,
       custo: custoTotal,
+      valorEntrada: valorEntradaNum,
+      entradaPaga: !!form.entradaPaga,
+      restantePago: !!form.restantePago,
     };
     if (isEdit) updatePedido(payload);
     else addPedido(payload);
@@ -822,42 +846,6 @@ function PedidoForm({ pedido, onClose }) {
         <Field label="Observações" span>
           <textarea className={inputCls} rows={2} value={form.obs} onChange={set("obs")} placeholder="Opcional" />
         </Field>
-        <Field label="Arte aprovada pelo cliente (JPEG)" span>
-          {form.arteAprovada ? (
-            <div className="flex items-center gap-3 border border-gray-200 rounded-lg p-2">
-              <img
-                src={form.arteAprovada}
-                alt="Arte aprovada"
-                className="w-16 h-16 object-cover rounded-md border border-gray-100 shrink-0"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs text-gray-600">Arte cadastrada. Ela será impressa junto com a OS/nota.</p>
-              </div>
-              <label className="shrink-0 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg px-2.5 py-1.5 bg-white cursor-pointer hover:bg-gray-50">
-                Trocar
-                <input type="file" accept="image/jpeg,image/jpg" className="hidden" onChange={handleArteChange} />
-              </label>
-              <button
-                type="button"
-                onClick={() => setForm((f) => ({ ...f, arteAprovada: "" }))}
-                className="shrink-0 text-xs font-medium text-red-600 border border-red-100 rounded-lg px-2.5 py-1.5 bg-white hover:bg-red-50"
-              >
-                Remover
-              </button>
-            </div>
-          ) : (
-            <label className="flex items-center gap-2 justify-center border border-dashed border-gray-300 rounded-lg px-3 py-4 text-sm text-gray-500 cursor-pointer hover:bg-gray-50">
-              <Upload size={15} />
-              Selecionar arquivo JPEG da arte aprovada
-              <input type="file" accept="image/jpeg,image/jpg" className="hidden" onChange={handleArteChange} />
-            </label>
-          )}
-          {arteErro && <span className="block text-[11px] text-red-500 mt-1">{arteErro}</span>}
-          <span className="block text-[11px] text-gray-400 mt-1">
-            Opcional. Cadastre a arte já aprovada pelo cliente em JPEG para que ela saia impressa junto com os dados
-            do pedido na Ordem de Serviço.
-          </span>
-        </Field>
       </div>
 
       {(valorTotal > 0 || custoTotal > 0) && (
@@ -872,6 +860,42 @@ function PedidoForm({ pedido, onClose }) {
           </div>
         </div>
       )}
+
+      <div className="border border-blue-100 bg-blue-50/60 rounded-lg px-4 py-3 mb-4">
+        <p className="text-xs font-medium text-blue-800/80 mb-3">Pagamento (padrão: 50% na encomenda, 50% na entrega)</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
+          <Field label="Valor de entrada (R$)">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              className={inputCls}
+              value={form.valorEntrada}
+              onChange={(e) => {
+                setEntradaManual(true);
+                set("valorEntrada")(e);
+              }}
+              placeholder="0,00"
+            />
+          </Field>
+          <Field label="Valor restante (calculado)">
+            <div className={`${inputCls} bg-gray-50 text-gray-700 font-medium`}>{formatCurrency(valorRestante)}</div>
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-gray-700 mb-2.5">
+          <input type="checkbox" checked={!!form.entradaPaga} onChange={setCheck("entradaPaga")} className="rounded" />
+          Entrada já recebida
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={!!form.restantePago} onChange={setCheck("restantePago")} className="rounded" />
+          Restante recebido
+        </label>
+        <p className="text-[11px] text-gray-500 mt-2">
+          {form.restantePago
+            ? "Restante já recebido."
+            : `Restante a receber na entrega, prevista para ${formatDateBR(form.dataEntrega)}.`}
+        </p>
+      </div>
 
       <div className="flex justify-end gap-2 mt-2">
         <button type="button" onClick={onClose} className="px-3.5 py-2 rounded-lg text-sm font-medium text-gray-600 border border-gray-200 bg-white">
@@ -896,6 +920,7 @@ function PedidoForm({ pedido, onClose }) {
 function OSDocument({ pedido, empresa, clientes }) {
   const cliente = clientes.find((c) => c.id === pedido.clienteId);
   const prazo = prazoInfo(pedido.dataEntrega, pedido.status);
+  const pgto = pagamentoInfo(pedido);
 
   return (
     <div className="print-area">
@@ -966,10 +991,24 @@ function OSDocument({ pedido, empresa, clientes }) {
       </div>
 
       <div className="flex justify-end mb-4">
-        <div className="w-56">
+        <div className="w-64">
           <div className="flex justify-between text-sm py-1">
             <span className="text-gray-500">Total do pedido</span>
             <span className="font-bold text-gray-900">{formatCurrency(pedido.valor)}</span>
+          </div>
+          <div className="flex justify-between text-xs py-1 border-t border-gray-100">
+            <span className="text-gray-400">Entrada {pgto.entradaPaga ? "(recebida)" : "(pendente)"}</span>
+            <span className={`font-medium ${pgto.entradaPaga ? "text-emerald-600" : "text-amber-600"}`}>
+              {formatCurrency(pgto.valorEntrada)}
+            </span>
+          </div>
+          <div className="flex justify-between text-xs py-1">
+            <span className="text-gray-400">
+              Restante {pgto.restantePago ? "(recebido)" : `(a receber em ${formatDateBR(pedido.dataEntrega)})`}
+            </span>
+            <span className={`font-medium ${pgto.restantePago ? "text-emerald-600" : "text-amber-600"}`}>
+              {formatCurrency(pgto.valorRestante)}
+            </span>
           </div>
           <div className="flex justify-between text-xs py-1 border-t border-gray-100">
             <span className="text-gray-400">Prazo</span>
@@ -982,17 +1021,6 @@ function OSDocument({ pedido, empresa, clientes }) {
         <div className="mb-6">
           <p className="text-xs text-gray-400 mb-1">Observações</p>
           <p className="text-sm text-gray-700">{pedido.obs}</p>
-        </div>
-      )}
-
-      {pedido.arteAprovada && (
-        <div className="mb-6 arte-aprovada-print">
-          <p className="text-xs text-gray-400 mb-2">Arte aprovada pelo cliente</p>
-          <img
-            src={pedido.arteAprovada}
-            alt="Arte aprovada pelo cliente"
-            className="max-w-full max-h-[420px] w-auto h-auto object-contain rounded-lg border border-gray-200 mx-auto"
-          />
         </div>
       )}
 
@@ -1227,7 +1255,9 @@ function PainelPage() {
     const receita = pedidos.reduce((s, p) => s + Number(p.valor || 0), 0);
     const custo = pedidos.reduce((s, p) => s + Number(p.custo || 0), 0);
     const despesasTotal = despesas.reduce((s, d) => s + Number(d.valor || 0), 0);
-    return { ativos, emProducao, aguardandoAprovacao, prontos, entregues, atrasados, vencendoHoje, vencendo3, receita, custo, despesasTotal };
+    const recebido = pedidos.reduce((s, p) => s + pagamentoInfo(p).totalRecebido, 0);
+    const aReceber = pedidos.reduce((s, p) => s + pagamentoInfo(p).totalAReceber, 0);
+    return { ativos, emProducao, aguardandoAprovacao, prontos, entregues, atrasados, vencendoHoje, vencendo3, receita, custo, despesasTotal, recebido, aReceber };
   }, [pedidos, despesas, hoje]);
 
   const KPIS = [
@@ -1247,6 +1277,8 @@ function PainelPage() {
     { label: "Custo dos pedidos", value: formatCurrency(stats.custo), icon: TrendingDown, tone: "text-orange-500", bg: "bg-orange-50" },
     { label: "Lucro", value: formatCurrency(lucro), icon: DollarSign, tone: "text-blue-600", bg: "bg-blue-50" },
     { label: "Despesas", value: formatCurrency(stats.despesasTotal), icon: Receipt, tone: "text-red-500", bg: "bg-red-50" },
+    { label: "Recebido", value: formatCurrency(stats.recebido), icon: CheckCircle2, tone: "text-emerald-600", bg: "bg-emerald-50" },
+    { label: "A receber", value: formatCurrency(stats.aReceber), icon: Clock, tone: "text-amber-500", bg: "bg-amber-50" },
   ];
 
   const prioridades = [...stats.ativos].sort((a, b) => (a.dataEntrega < b.dataEntrega ? -1 : 1)).slice(0, 4);
@@ -1274,7 +1306,7 @@ function PainelPage() {
           <DollarSign size={16} className="text-gray-700" />
           <span className="font-semibold text-gray-900">Resumo financeiro</span>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-4">
           {FINANCEIRO.map(({ label, value, icon: Icon, tone, bg }) => (
             <div key={label} className="border border-gray-200 rounded-xl p-4">
               <div className="flex items-start justify-between">
@@ -1289,7 +1321,8 @@ function PainelPage() {
         </div>
         <p className="text-xs text-gray-500 leading-relaxed">
           O lucro considera apenas o valor dos pedidos menos o custo de produção. As despesas são
-          controladas separadamente e não entram nesse cálculo.
+          controladas separadamente e não entram nesse cálculo. "Recebido" soma as entradas e
+          restantes já marcados como pagos; "A receber" é o que falta receber dos pedidos.
         </p>
       </div>
 
@@ -1382,7 +1415,7 @@ function PedidosPage() {
     return matchQ && matchStatus && matchServico;
   });
 
-  const cols = ["Pedido", "Cliente", "Serviço", "Produto", "Qtd", "Valor", "Custo", "Nota", "Entrega", "Prazo", "Status", ""];
+  const cols = ["Pedido", "Cliente", "Serviço", "Produto", "Qtd", "Valor", "Custo", "Pagamento", "Nota", "Entrega", "Prazo", "Status", ""];
 
   return (
     <div>
@@ -1430,6 +1463,7 @@ function PedidosPage() {
             <tbody>
               {filtered.map((p) => {
                 const prazo = prazoInfo(p.dataEntrega, p.status);
+                const pgto = pagamentoInfo(p);
                 return (
                   <tr key={p.id} className="border-t border-gray-100">
                     <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{p.id}</td>
@@ -1439,6 +1473,12 @@ function PedidosPage() {
                     <td className="px-4 py-3 text-gray-700">{p.qtd}</td>
                     <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{formatCurrency(p.valor)}</td>
                     <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{formatCurrency(p.custo)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <Tag color={pgto.statusColor}>{pgto.statusLabel}</Tag>
+                      {pgto.totalAReceber > 0 && (
+                        <span className="block text-[11px] text-gray-400 mt-0.5">{formatCurrency(pgto.totalAReceber)} a receber</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-gray-400 whitespace-nowrap">{p.nota || "—"}</td>
                     <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{formatDateBR(p.dataEntrega)}</td>
                     <td className="px-4 py-3 whitespace-nowrap">
@@ -2866,7 +2906,6 @@ export default function GraficaDashboard() {
           .print-area, .print-area * { visibility: visible; }
           .print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 0; }
           .print-area .os-two-col-print { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-          .print-area .arte-aprovada-print { page-break-inside: avoid; }
           .no-print { display: none !important; }
         }
       `}</style>
