@@ -253,7 +253,7 @@ function buildLembreteTexto(pedido, empresa) {
     `⚠️ Lembrete de prazo — ${empresa.nome}`,
     "",
     `Pedido: ${pedido.id} — ${pedido.cliente}`,
-    `Produto: ${pedido.produto} (${pedido.qtd} un.)`,
+    `Produtos: ${resumoProdutos(pedido)}`,
     `Entrega prevista: ${formatDateBR(pedido.dataEntrega)}`,
     `Status atual: ${pedido.status}`,
     `Situação: ${situacaoPedido(pedido)}`,
@@ -624,6 +624,29 @@ function ConfirmDialog({ title, body, onConfirm, onCancel }) {
   );
 }
 
+// Normaliza pedidos antigos (um produto) e novos pedidos (vários itens) para o mesmo formato.
+function itensDoPedido(pedido) {
+  if (Array.isArray(pedido?.itens) && pedido.itens.length) return pedido.itens;
+  if (!pedido?.produto) return [];
+  const qtd = Number(pedido.qtd) || 0;
+  return [{
+    id: pedido.itemId || `item_${pedido.id || Date.now()}`,
+    produtoId: pedido.produtoId || null,
+    produto: pedido.produto,
+    qtd,
+    valorUnitario: Number(pedido.valorUnitario ?? (qtd ? Number(pedido.valor || 0) / qtd : 0)) || 0,
+    custoUnitario: Number(pedido.custoUnitario ?? (qtd ? Number(pedido.custo || 0) / qtd : 0)) || 0,
+  }];
+}
+
+function resumoProdutos(pedido) {
+  const itens = itensDoPedido(pedido);
+  if (!itens.length) return "";
+  return itens.length === 1
+    ? `${itens[0].produto} · ${itens[0].qtd} un.`
+    : itens.map((i) => `${i.produto} (${i.qtd})`).join(" · ");
+}
+
 // ---------------------------------------------------------------------------
 // Pedido form
 // ---------------------------------------------------------------------------
@@ -667,6 +690,11 @@ function PedidoForm({ pedido, onClose }) {
     };
   });
 
+  const [itens, setItens] = useState(() => {
+    if (pedido) return itensDoPedido(pedido);
+    return [{ id: `item_${Date.now()}`, produtoId: produtos.length ? "" : "__custom__", produto: "", qtd: 1, valorUnitario: "", custoUnitario: "" }];
+  });
+
   // Enquanto o usuário não editar manualmente o valor de entrada, ele acompanha
   // 50% do valor total do pedido automaticamente.
   const [entradaManual, setEntradaManual] = useState(isEdit);
@@ -699,29 +727,50 @@ function PedidoForm({ pedido, onClose }) {
     reader.readAsDataURL(file);
   };
 
-  const handleProdutoChange = (e) => {
-    const val = e.target.value;
-    if (val === "__custom__") {
-      setForm((f) => ({ ...f, produtoId: "__custom__" }));
-      return;
-    }
-    const prod = produtos.find((p) => p.id === val);
-    if (!prod) return;
-    setForm((f) => ({
-      ...f,
-      produtoId: prod.id,
-      produto: prod.nome,
-      custoUnitario: prod.custoProducao ?? f.custoUnitario,
-      valorUnitario:
-        prod.valorVenda !== "" && prod.valorVenda != null ? prod.valorVenda : f.valorUnitario,
-    }));
+  const atualizarItem = (id, campo, valor) => {
+    setItens((lista) => lista.map((item) => (item.id === id ? { ...item, [campo]: valor } : item)));
   };
 
-  const qtdNum = Number(form.qtd) || 0;
-  const valorUnitNum = Number(form.valorUnitario) || 0;
-  const custoUnitNum = Number(form.custoUnitario) || 0;
-  const valorTotal = qtdNum * valorUnitNum;
-  const custoTotal = qtdNum * custoUnitNum;
+  const selecionarProduto = (id, valor) => {
+    if (valor === "__custom__") {
+      atualizarItem(id, "produtoId", "__custom__");
+      return;
+    }
+    const prod = produtos.find((p) => p.id === valor);
+    if (!prod) return;
+    setItens((lista) => lista.map((item) => item.id !== id ? item : ({
+      ...item,
+      produtoId: prod.id,
+      produto: prod.nome,
+      custoUnitario: prod.custoProducao ?? item.custoUnitario,
+      valorUnitario: prod.valorVenda !== "" && prod.valorVenda != null ? prod.valorVenda : item.valorUnitario,
+    })));
+  };
+
+  const adicionarItem = () => {
+    setItens((lista) => [...lista, {
+      id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      produtoId: produtos.length ? "" : "__custom__",
+      produto: "",
+      qtd: 1,
+      valorUnitario: "",
+      custoUnitario: "",
+    }]);
+  };
+
+  const removerItem = (id) => {
+    setItens((lista) => lista.length <= 1 ? lista : lista.filter((item) => item.id !== id));
+  };
+
+  const itensCalculados = itens.map((item) => ({
+    ...item,
+    qtd: Number(item.qtd) || 0,
+    valorUnitario: Number(item.valorUnitario) || 0,
+    custoUnitario: Number(item.custoUnitario) || 0,
+  }));
+  const qtdNum = itensCalculados.reduce((s, item) => s + item.qtd, 0);
+  const valorTotal = itensCalculados.reduce((s, item) => s + item.qtd * item.valorUnitario, 0);
+  const custoTotal = itensCalculados.reduce((s, item) => s + item.qtd * item.custoUnitario, 0);
   const lucroEstimado = valorTotal - custoTotal;
   const margem = valorTotal > 0 ? (lucroEstimado / valorTotal) * 100 : 0;
 
@@ -735,19 +784,21 @@ function PedidoForm({ pedido, onClose }) {
   const valorEntradaNum = Math.min(Number(form.valorEntrada) || 0, valorTotal);
   const valorRestante = Math.max(0, round2(valorTotal - valorEntradaNum));
 
-  const canSave = form.cliente.trim() && form.produto.trim() && form.dataEntrega && qtdNum > 0;
+  const canSave = form.cliente.trim() && form.dataEntrega && itensCalculados.length > 0 && itensCalculados.every((item) => item.produto.trim() && item.qtd > 0);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!canSave) return;
     const payload = {
       ...form,
-      produtoId: form.produtoId === "__custom__" ? null : form.produtoId,
+      produtoId: itensCalculados[0]?.produtoId === "__custom__" ? null : (itensCalculados[0]?.produtoId || null),
+      produto: itensCalculados[0]?.produto || "",
       qtd: qtdNum,
-      valorUnitario: valorUnitNum,
-      custoUnitario: custoUnitNum,
+      valorUnitario: itensCalculados[0]?.valorUnitario || 0,
+      custoUnitario: itensCalculados[0]?.custoUnitario || 0,
       valor: valorTotal,
       custo: custoTotal,
+      itens: itensCalculados.map((item) => ({ ...item, produtoId: item.produtoId === "__custom__" ? null : item.produtoId })),
       valorEntrada: valorEntradaNum,
       entradaPaga: !!form.entradaPaga,
       restantePago: !!form.restantePago,
@@ -793,83 +844,60 @@ function PedidoForm({ pedido, onClose }) {
             ))}
           </select>
         </Field>
-        <Field label="Produto" span>
-          {produtos.length > 0 ? (
-            <>
-              <select className={inputCls} value={form.produtoId || ""} onChange={handleProdutoChange} required>
-                <option value="" disabled>
-                  Selecione um produto cadastrado
-                </option>
-                {produtos.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nome}
-                  </option>
-                ))}
-                <option value="__custom__">Outro (digitar manualmente)</option>
-              </select>
-              {form.produtoId === "__custom__" && (
-                <input
-                  className={`${inputCls} mt-2`}
-                  value={form.produto}
-                  onChange={set("produto")}
-                  placeholder="Ex: Camisa longa"
-                  required
-                />
-              )}
-            </>
-          ) : (
-            <>
-              <input className={inputCls} value={form.produto} onChange={set("produto")} placeholder="Ex: Camisa de time" required />
-              <span className="block text-[11px] text-gray-400 mt-1">
-                Dica: cadastre seus produtos na aba "Produtos" para preencher o custo automaticamente.
-              </span>
-            </>
-          )}
-        </Field>
-        <Field label="Quantidade">
-          <input type="number" min="1" className={inputCls} value={form.qtd} onChange={set("qtd")} required />
-        </Field>
-        <Field label="Nº da OS / nota fiscal">
-          <input
-            className={inputCls}
-            value={form.nota}
-            onChange={set("nota")}
-            placeholder={isEdit ? "—" : "Gerado automaticamente ao criar"}
-          />
-          <span className="block text-[11px] text-gray-400 mt-1">
-            Deixe em branco para gerar um número de OS automático. Preencha só se já tiver o nº da nota fiscal emitida.
-          </span>
-        </Field>
-        <Field label="Valor unitário (R$)">
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            className={inputCls}
-            value={form.valorUnitario}
-            onChange={set("valorUnitario")}
-            placeholder="0,00"
-          />
-        </Field>
-        <Field label="Valor total (calculado)">
-          <div className={`${inputCls} bg-gray-50 text-gray-700 font-medium`}>{formatCurrency(valorTotal)}</div>
-        </Field>
-        <Field label="Custo unitário (R$)">
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            className={inputCls}
-            value={form.custoUnitario}
-            onChange={set("custoUnitario")}
-            placeholder="0,00"
-          />
-          {form.produtoId && form.produtoId !== "__custom__" && (
-            <span className="block text-[11px] text-gray-400 mt-1">Preenchido a partir do produto. Pode ajustar se precisar.</span>
-          )}
-        </Field>
-        <Field label="Custo total (calculado)">
-          <div className={`${inputCls} bg-gray-50 text-gray-700 font-medium`}>{formatCurrency(custoTotal)}</div>
+        <Field label="Produtos do pedido" span>
+          <div className="space-y-3">
+            {itens.map((item, index) => (
+              <div key={item.id} className="border border-gray-200 rounded-xl p-3 bg-white">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-gray-600">Produto {index + 1}</p>
+                  {itens.length > 1 && (
+                    <button type="button" onClick={() => removerItem(item.id)} className="text-xs text-red-600 hover:text-red-700 flex items-center gap-1">
+                      <Trash2 size={13} /> Remover
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="lg:col-span-2">
+                    <span className="block text-[11px] font-medium text-gray-500 mb-1">Produto</span>
+                    {produtos.length > 0 ? (
+                      <>
+                        <select className={inputCls} value={item.produtoId || ""} onChange={(e) => selecionarProduto(item.id, e.target.value)} required>
+                          <option value="" disabled>Selecione um produto</option>
+                          {produtos.map((p) => <option key={p.id} value={p.id}>{p.nome}</option>)}
+                          <option value="__custom__">Outro (digitar manualmente)</option>
+                        </select>
+                        {item.produtoId === "__custom__" && (
+                          <input className={`${inputCls} mt-2`} value={item.produto} onChange={(e) => atualizarItem(item.id, "produto", e.target.value)} placeholder="Ex: Camisa longa" required />
+                        )}
+                      </>
+                    ) : (
+                      <input className={inputCls} value={item.produto} onChange={(e) => atualizarItem(item.id, "produto", e.target.value)} placeholder="Ex: Camisa de time" required />
+                    )}
+                  </div>
+                  <div>
+                    <span className="block text-[11px] font-medium text-gray-500 mb-1">Quantidade</span>
+                    <input type="number" min="1" className={inputCls} value={item.qtd} onChange={(e) => atualizarItem(item.id, "qtd", e.target.value)} required />
+                  </div>
+                  <div>
+                    <span className="block text-[11px] font-medium text-gray-500 mb-1">Valor unitário (R$)</span>
+                    <input type="number" min="0" step="0.01" className={inputCls} value={item.valorUnitario} onChange={(e) => atualizarItem(item.id, "valorUnitario", e.target.value)} placeholder="0,00" />
+                  </div>
+                  <div>
+                    <span className="block text-[11px] font-medium text-gray-500 mb-1">Custo unitário (R$)</span>
+                    <input type="number" min="0" step="0.01" className={inputCls} value={item.custoUnitario} onChange={(e) => atualizarItem(item.id, "custoUnitario", e.target.value)} placeholder="0,00" />
+                  </div>
+                  <div className="sm:col-span-2 lg:col-span-3 flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                    <span className="text-xs text-gray-500">Total deste produto</span>
+                    <strong className="text-sm text-gray-800">{formatCurrency((Number(item.qtd) || 0) * (Number(item.valorUnitario) || 0))}</strong>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <button type="button" onClick={adicionarItem} className="flex items-center gap-1.5 text-sm font-medium text-blue-600 border border-blue-200 bg-blue-50 hover:bg-blue-100 rounded-lg px-3 py-2">
+              <Plus size={15} /> Adicionar outro produto
+            </button>
+            <p className="text-[11px] text-gray-400">Todos os produtos ficam na mesma nota e vinculados ao mesmo cliente.</p>
+          </div>
         </Field>
         <Field label="Data de recebimento">
           <input type="date" className={inputCls} value={form.dataRecebido} onChange={set("dataRecebido")} />
@@ -1047,15 +1075,15 @@ function OSDocument({ pedido, empresa, clientes }) {
             </tr>
           </thead>
           <tbody>
-            <tr className="border-t border-gray-200">
-              <td className="px-3 py-2">{pedido.servico}</td>
-              <td className="px-3 py-2">{pedido.produto}</td>
-              <td className="px-3 py-2 text-right">{pedido.qtd}</td>
-              <td className="px-3 py-2 text-right">
-                {formatCurrency(pedido.valorUnitario ?? (pedido.qtd ? pedido.valor / pedido.qtd : 0))}
-              </td>
-              <td className="px-3 py-2 text-right font-semibold">{formatCurrency(pedido.valor)}</td>
-            </tr>
+            {itensDoPedido(pedido).map((item, index) => (
+              <tr key={item.id || index} className="border-t border-gray-200">
+                <td className="px-3 py-2">{index === 0 ? pedido.servico : "—"}</td>
+                <td className="px-3 py-2">{item.produto}</td>
+                <td className="px-3 py-2 text-right">{item.qtd}</td>
+                <td className="px-3 py-2 text-right">{formatCurrency(item.valorUnitario)}</td>
+                <td className="px-3 py-2 text-right font-semibold">{formatCurrency(item.qtd * item.valorUnitario)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -1427,7 +1455,7 @@ function PainelPage() {
                       {p.id} · {p.cliente}
                     </p>
                     <p className="text-sm text-gray-500 mt-0.5">
-                      {p.produto} · {p.qtd} un. · Entrega {formatDateBR(p.dataEntrega)}
+                      {resumoProdutos(p)} · Entrega {formatDateBR(p.dataEntrega)}
                     </p>
                     <div className="flex gap-2 mt-3">
                       <Tag color={prazo.color}>{prazo.label}</Tag>
@@ -1490,7 +1518,7 @@ function PedidosPage() {
   const filtered = pedidos.filter((p) => {
     const q = search.trim().toLowerCase();
     const matchQ =
-      !q || p.id.toLowerCase().includes(q) || p.cliente.toLowerCase().includes(q) || p.produto.toLowerCase().includes(q);
+      !q || p.id.toLowerCase().includes(q) || p.cliente.toLowerCase().includes(q) || resumoProdutos(p).toLowerCase().includes(q);
     const matchStatus = !filterStatus || p.status === filterStatus;
     const matchServico = !filterServico || p.servico === filterServico;
     return matchQ && matchStatus && matchServico;
@@ -1882,7 +1910,7 @@ function ProducaoPage() {
                           {p.id} · {p.cliente}
                         </p>
                         <p className="text-sm text-gray-500 mt-0.5">
-                          {p.produto} · {p.qtd} un. · Entrega {formatDateBR(p.dataEntrega)}
+                          {resumoProdutos(p)} · Entrega {formatDateBR(p.dataEntrega)}
                         </p>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
@@ -1942,7 +1970,7 @@ function KanbanPage() {
                         <p className="text-xs font-semibold text-gray-900">{p.id}</p>
                         <p className="text-xs text-gray-600 mt-0.5 truncate">{p.cliente}</p>
                         <p className="text-xs text-gray-400 mt-0.5 truncate">
-                          {p.produto} · {p.qtd} un.
+                          {resumoProdutos(p)}
                         </p>
                         <div className="mt-2">
                           <Tag color={prazo.color}>{prazo.label}</Tag>
@@ -2085,7 +2113,7 @@ function CalendarioPage() {
                     {p.id} · {p.cliente}
                   </p>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    {p.produto} · {p.qtd} un.
+                    {resumoProdutos(p)}
                   </p>
                   <div className="mt-2">
                     <Tag color={STATUS_COLOR[p.status]}>{p.status}</Tag>
@@ -2239,7 +2267,7 @@ function EntregasPage() {
                     {p.id} · {p.cliente}
                   </p>
                   <p className="text-sm text-gray-500 mt-0.5">
-                    {p.produto} · {p.qtd} un. · Prazo {formatDateBR(p.dataEntrega)}
+                    {resumoProdutos(p)} · Prazo {formatDateBR(p.dataEntrega)}
                   </p>
                 </div>
                 <button
@@ -2300,7 +2328,7 @@ function LembreteCard({ pedido, empresa, onMarcarEnviado, onMarcarPendente }) {
             {pedido.id} · {pedido.cliente}
           </p>
           <p className="text-sm text-gray-500 mt-0.5">
-            {pedido.produto} · {pedido.qtd} un. · Entrega {formatDateBR(pedido.dataEntrega)}
+            {resumoProdutos(pedido)} · Entrega {formatDateBR(pedido.dataEntrega)}
           </p>
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
