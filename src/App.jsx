@@ -844,7 +844,8 @@ function PedidoForm({ pedido, onClose }) {
             ))}
           </select>
         </Field>
-        <Field label="Produtos do pedido" span>
+        <div className="block mb-3.5 min-w-0 sm:col-span-2">
+          <span className="block text-xs font-medium text-gray-500 mb-1">Produtos do pedido</span>
           <div className="space-y-3">
             {itens.map((item, index) => (
               <div key={item.id} className="border border-gray-200 rounded-xl p-3 bg-white">
@@ -898,7 +899,7 @@ function PedidoForm({ pedido, onClose }) {
             </button>
             <p className="text-[11px] text-gray-400">Todos os produtos ficam na mesma nota e vinculados ao mesmo cliente.</p>
           </div>
-        </Field>
+        </div>
         <Field label="Data de recebimento">
           <input type="date" className={inputCls} value={form.dataRecebido} onChange={set("dataRecebido")} />
         </Field>
