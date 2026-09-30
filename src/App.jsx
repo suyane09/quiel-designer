@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext, createContext } from "react";
+import { useState, useEffect, useMemo, useRef, useContext, createContext } from "react";
 import {
   LayoutGrid,
   ClipboardList,
@@ -1349,6 +1349,155 @@ function DespesaForm({ despesa, onClose }) {
 // Painel
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Faturamento por mês (abas)
+// ---------------------------------------------------------------------------
+
+const NOMES_MESES = [
+  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+];
+
+// "2026-09" -> { nome: "Setembro", ano: "2026" }
+function mesInfo(key) {
+  const [ano, mes] = key.split("-");
+  return { nome: NOMES_MESES[Number(mes) - 1] || key, ano };
+}
+
+function FaturamentoMensal() {
+  const { pedidos, despesas } = useApp();
+  const mesAtual = todayISO().slice(0, 7);
+  const [selecionado, setSelecionado] = useState(mesAtual);
+  const abaAtivaRef = useRef(null);
+
+  // Um pedido entra no faturamento do mês em que foi recebido (dataRecebido).
+  const meses = useMemo(() => {
+    const map = {};
+    const garante = (key) => {
+      if (!map[key]) map[key] = { key, pedidos: [], despesas: [] };
+      return map[key];
+    };
+    garante(mesAtual); // o mês atual sempre tem aba, mesmo sem pedidos ainda
+    pedidos.forEach((p) => {
+      const d = p.dataRecebido || p.dataEntrega;
+      if (d) garante(d.slice(0, 7)).pedidos.push(p);
+    });
+    despesas.forEach((d) => {
+      if (d.data) garante(d.data.slice(0, 7)).despesas.push(d);
+    });
+    return Object.values(map)
+      .sort((a, b) => (a.key < b.key ? -1 : 1))
+      .map((m) => {
+        const faturamento = m.pedidos.reduce((s, p) => s + Number(p.valor || 0), 0);
+        const custo = m.pedidos.reduce((s, p) => s + Number(p.custo || 0), 0);
+        const recebido = m.pedidos.reduce((s, p) => s + pagamentoInfo(p).totalRecebido, 0);
+        const aReceber = m.pedidos.reduce((s, p) => s + pagamentoInfo(p).totalAReceber, 0);
+        const despesasTotal = m.despesas.reduce((s, d) => s + Number(d.valor || 0), 0);
+        return { ...m, faturamento, custo, recebido, aReceber, despesasTotal, lucro: faturamento - custo };
+      });
+  }, [pedidos, despesas, mesAtual]);
+
+  const mes = meses.find((m) => m.key === selecionado) || meses[meses.length - 1];
+  const anos = new Set(meses.map((m) => m.key.slice(0, 4)));
+  const mostrarAno = anos.size > 1;
+
+  // Mantém a aba selecionada visível quando a barra de abas rola (celular).
+  useEffect(() => {
+    abaAtivaRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [mes?.key]);
+
+  const info = mesInfo(mes.key);
+  const pedidosDoMes = [...mes.pedidos].sort((a, b) => ((a.dataRecebido || "") < (b.dataRecebido || "") ? 1 : -1));
+
+  const CARDS = [
+    { label: "Faturamento", value: mes.faturamento, destaque: true },
+    { label: "Recebido", value: mes.recebido },
+    { label: "A receber", value: mes.aReceber },
+    { label: "Custo dos pedidos", value: mes.custo },
+    { label: "Lucro", value: mes.lucro },
+    { label: "Despesas", value: mes.despesasTotal },
+  ];
+
+  return (
+    <div className="border border-gray-200 rounded-xl bg-white mb-6 overflow-hidden">
+      <div className="flex items-center gap-2 px-5 pt-5 mb-3">
+        <TrendingUp size={16} className="text-gray-700" />
+        <span className="font-semibold text-gray-900">Faturamento por mês</span>
+      </div>
+
+      <div className="flex gap-1 overflow-x-auto px-5 border-b border-gray-200" role="tablist">
+        {meses.map((m) => {
+          const ativo = m.key === mes.key;
+          const i = mesInfo(m.key);
+          return (
+            <button
+              key={m.key}
+              ref={ativo ? abaAtivaRef : null}
+              role="tab"
+              aria-selected={ativo}
+              onClick={() => setSelecionado(m.key)}
+              className={`shrink-0 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                ativo
+                  ? "border-gray-900 text-gray-900"
+                  : "border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300"
+              }`}
+            >
+              {i.nome}
+              {mostrarAno && <span className="ml-1 text-xs text-gray-400">{i.ano}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="p-5">
+        <p className="text-sm text-gray-500 mb-3">
+          {info.nome} de {info.ano} · {mes.pedidos.length} pedido(s)
+        </p>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-5">
+          {CARDS.map(({ label, value, destaque }) => (
+            <div
+              key={label}
+              className={`rounded-xl p-4 border ${destaque ? "border-gray-900 bg-gray-900" : "border-gray-200"}`}
+            >
+              <span className={`text-sm ${destaque ? "text-gray-300" : "text-gray-500"}`}>{label}</span>
+              <p className={`text-xl font-bold mt-2 ${destaque ? "text-white" : "text-gray-900"}`}>
+                {formatCurrency(value)}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {pedidosDoMes.length === 0 ? (
+          <p className="text-sm text-gray-400 py-4 text-center">Nenhum pedido em {info.nome}.</p>
+        ) : (
+          <div className="space-y-2">
+            {pedidosDoMes.map((p) => (
+              <div
+                key={p.id}
+                className="border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3 flex-wrap"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-gray-900 truncate">
+                    {p.id} · {p.cliente}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    {resumoProdutos(p)} · Recebido em {formatDateBR(p.dataRecebido)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Tag color={STATUS_COLOR[p.status]}>{p.status}</Tag>
+                  <span className="font-semibold text-gray-900">{formatCurrency(p.valor)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PainelPage() {
   const { pedidos, despesas } = useApp();
   const hoje = todayISO();
@@ -1435,6 +1584,8 @@ function PainelPage() {
           restantes já marcados como pagos; "A receber" é o que falta receber dos pedidos.
         </p>
       </div>
+
+      <FaturamentoMensal />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 border border-gray-200 rounded-xl p-5 bg-white">
