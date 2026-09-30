@@ -1377,7 +1377,6 @@ function FaturamentoMensal() {
       if (!map[key]) map[key] = { key, pedidos: [], despesas: [] };
       return map[key];
     };
-    garante(mesAtual); // o mês atual sempre tem aba, mesmo sem pedidos ainda
     pedidos.forEach((p) => {
       const d = p.dataRecebido || p.dataEntrega;
       if (d) garante(d.slice(0, 7)).pedidos.push(p);
@@ -1385,6 +1384,23 @@ function FaturamentoMensal() {
     despesas.forEach((d) => {
       if (d.data) garante(d.data.slice(0, 7)).despesas.push(d);
     });
+    // Sempre mostra o ano atual inteiro (Janeiro a Dezembro). Se houver dados
+    // de outros anos, a faixa se estende para cobrir todos eles, sem buracos.
+    const anoAtual = mesAtual.slice(0, 4);
+    const chaves = Object.keys(map);
+    const inicio = [`${anoAtual}-01`, ...chaves].sort()[0];
+    const fim = [`${anoAtual}-12`, ...chaves].sort().slice(-1)[0];
+    let [ay, am] = inicio.split("-").map(Number);
+    for (;;) {
+      const k = `${ay}-${String(am).padStart(2, "0")}`;
+      if (k > fim) break;
+      garante(k);
+      am += 1;
+      if (am > 12) {
+        am = 1;
+        ay += 1;
+      }
+    }
     return Object.values(map)
       .sort((a, b) => (a.key < b.key ? -1 : 1))
       .map((m) => {
@@ -1425,7 +1441,7 @@ function FaturamentoMensal() {
         <span className="font-semibold text-gray-900">Faturamento por mês</span>
       </div>
 
-      <div className="flex gap-1 overflow-x-auto px-5 border-b border-gray-200" role="tablist">
+      <div className="flex gap-1 overflow-x-auto overflow-y-hidden px-5 border-b border-gray-200" role="tablist">
         {meses.map((m) => {
           const ativo = m.key === mes.key;
           const i = mesInfo(m.key);
@@ -1439,6 +1455,8 @@ function FaturamentoMensal() {
               className={`shrink-0 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 ativo
                   ? "border-gray-900 text-gray-900"
+                  : m.key > mesAtual
+                  ? "border-transparent text-gray-300 hover:text-gray-500"
                   : "border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300"
               }`}
             >
@@ -1454,14 +1472,14 @@ function FaturamentoMensal() {
           {info.nome} de {info.ano} · {mes.pedidos.length} pedido(s)
         </p>
 
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-5">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3 sm:gap-4 mb-5">
           {CARDS.map(({ label, value, destaque }) => (
             <div
               key={label}
-              className={`rounded-xl p-4 border ${destaque ? "border-gray-900 bg-gray-900" : "border-gray-200"}`}
+              className={`rounded-xl p-4 border min-w-0 ${destaque ? "border-gray-900 bg-gray-900" : "border-gray-200"}`}
             >
               <span className={`text-sm ${destaque ? "text-gray-300" : "text-gray-500"}`}>{label}</span>
-              <p className={`text-xl font-bold mt-2 ${destaque ? "text-white" : "text-gray-900"}`}>
+              <p className={`text-lg font-bold mt-2 break-words ${destaque ? "text-white" : "text-gray-900"}`}>
                 {formatCurrency(value)}
               </p>
             </div>
@@ -1565,16 +1583,16 @@ function PainelPage() {
           <DollarSign size={16} className="text-gray-700" />
           <span className="font-semibold text-gray-900">Resumo financeiro</span>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-4">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3 sm:gap-4 mb-4">
           {FINANCEIRO.map(({ label, value, icon: Icon, tone, bg }) => (
-            <div key={label} className="border border-gray-200 rounded-xl p-4">
-              <div className="flex items-start justify-between">
+            <div key={label} className="border border-gray-200 rounded-xl p-4 min-w-0">
+              <div className="flex items-start justify-between gap-2">
                 <span className="text-sm text-gray-500">{label}</span>
-                <span className={`w-7 h-7 rounded-full flex items-center justify-center ${bg}`}>
+                <span className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center ${bg}`}>
                   <Icon size={13} className={tone} />
                 </span>
               </div>
-              <p className="text-xl font-bold text-gray-900 mt-2">{value}</p>
+              <p className="text-lg font-bold text-gray-900 mt-2 break-words">{value}</p>
             </div>
           ))}
         </div>
